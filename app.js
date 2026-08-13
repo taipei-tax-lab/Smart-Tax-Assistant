@@ -62,16 +62,62 @@ const FALLBACK_LEARNING_BANK = {
 };
 const icons = {"房屋稅": "⌂","地價稅": "▱","契稅": "▤","土地增值稅": "△","使用牌照稅": "▰","娛樂稅": "♪","印花稅": "▧","納保及行政救濟": "♢","繳稅方式、電子繳款書及繳納證明": "＄","延分期相關": "◷","稅務管理及其他": "＋"};
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+
+// 將新版 questionBank.js 的欄位正規化成 app.js 既有介面使用的格式。
+// 保留原始欄位（包含 aliases / intent），避免影響新版 search.js。
+function normalizeQuestion(item,index=0){
+  const rawId=item?.id ?? item?.['編號'] ?? (index+1);
+  const numericId=Number(rawId);
+  const id=Number.isFinite(numericId)?numericId:String(rawId).trim();
+
+  const parseList=value=>{
+    if(Array.isArray(value))return value.map(x=>String(x).trim()).filter(Boolean);
+    return String(value||'').split(/[、,，;；\n|]+/).map(x=>x.trim()).filter(Boolean);
+  };
+  const parseRelated=value=>{
+    const list=Array.isArray(value)?value:String(value||'').split(/[、,，;；\s]+/);
+    return list.map(v=>{
+      const n=Number(v);
+      return Number.isFinite(n)?n:String(v).trim();
+    }).filter(v=>v!=='' && v!==null && v!==undefined);
+  };
+
+  const answer=String(item?.answer ?? item?.['完整答案'] ?? item?.['答案'] ?? '').trim();
+  const popularRaw=item?.popular ?? item?.['熱門問題'];
+  const popularText=String(popularRaw ?? '').trim().toLowerCase();
+
+  return {
+    ...item,
+    id,
+    category:String(item?.category ?? item?.['分類'] ?? '其他').trim()||'其他',
+    question:String(item?.question ?? item?.['問題'] ?? '').trim(),
+    summary:String(item?.summary ?? item?.['重點摘要'] ?? item?.['AI摘要'] ?? '').trim()||answer.slice(0,120),
+    answer,
+    legalBasis:String(item?.legalBasis ?? item?.['法規依據'] ?? item?.['法令依據'] ?? '').trim(),
+    keywords:parseList(item?.keywords ?? item?.['關鍵字']),
+    aliases:parseList(item?.aliases),
+    intent:parseList(item?.intent),
+    popular:popularRaw===true || ['是','true','1','yes','y'].includes(popularText),
+    popularTitle:String(item?.popularTitle ?? item?.['熱門顯示名稱'] ?? item?.['常用查詢名稱'] ?? item?.['首頁顯示名稱'] ?? item?.['短標題'] ?? '').trim(),
+    relatedIds:parseRelated(item?.relatedIds ?? item?.['相關題號']),
+    version:String(item?.version ?? item?.['版本'] ?? '').trim()
+  };
+}
+function normalizeBank(items){
+  return Array.isArray(items)?items.map((item,index)=>normalizeQuestion(item,index)).filter(item=>item.question||item.answer):[];
+}
+function sameId(a,b){return String(a)===String(b)}
+
 async function loadBank(){
   // 先使用 questionBank.js，確保每次替換 JS 後立即更新。
   if(Array.isArray(window.questionBank) && window.questionBank.length){
-    bank=window.questionBank;
+    bank=normalizeBank(window.questionBank);
   }
   // 網站環境下若沒有 questionBank.js，才嘗試讀取 JSON。
   if(!bank.length && location.protocol!=='file:'){
     try{
       const r=await fetch('questionBank.json',{cache:'no-store'});
-      if(r.ok)bank=await r.json();
+      if(r.ok)bank=normalizeBank(await r.json());
     }catch(e){console.warn('questionBank.json 載入失敗',e)}
   }
   if(!bank.length){
@@ -142,19 +188,19 @@ function renderPopular(){
   }).join('');
 
   $$('#popularSearches [data-popular-id]').forEach(button=>{
-    button.onclick=()=>openDetail(Number(button.dataset.popularId));
+    button.onclick=()=>openDetail(button.dataset.popularId);
   });
 }
 function renderCategories(){const counts={};bank.forEach(x=>counts[x.category]=(counts[x.category]||0)+1);$('#categoryCards').innerHTML=Object.entries(counts).map(([c,n])=>`<article class="category-card" data-cat="${c}"><div class="category-icon">${icons[c]||'•'}</div><h4>${c}</h4><p>${n} 題答詢內容</p></article>`).join('');$$('.category-card').forEach(x=>x.onclick=()=>{currentCategory=x.dataset.cat;runSearch('',currentCategory)})}
 function fillCategorySelect(){const cats=['全部',...new Set(bank.map(x=>x.category))];$('#categorySelect').innerHTML=cats.map(c=>`<option>${c}</option>`).join('')}
 function runSearch(q,cat='全部'){currentQuery=q;currentCategory=cat;$$('.search-input').forEach(i=>i.value=q);go('search');const data=TaxSearch.search(bank,q,cat);$('#searchMeta').innerHTML=`<span>${q?`「${escapeHtml(q)}」的搜尋結果`:(cat==='全部'?'熱門題目':cat)}</span><b>共 ${data.length} 筆</b>`;renderResults(data)}
 function renderResults(data){$('#searchResults').innerHTML=data.length?data.slice(0,50).map(item=>`<article class="result-card" data-id="${item.id}"><div class="result-top"><span class="cat-tag">${item.category}</span></div><h3>${escapeHtml(item.question)}</h3><p>${escapeHtml(item.summary)}</p><div class="result-actions"><button class="small-btn" data-open="${item.id}">查看完整答詢</button><button class="small-btn fav-btn" data-fav="${item.id}">${isFav(item.id)?'★ 已收藏':'☆ 收藏'}</button></div></article>`).join(''):'<div class="empty">找不到相符題目，請改用較簡短的關鍵字或選擇業務分類。</div>';bindCards('#searchResults')}
-function bindCards(root){$$(root+' [data-open]').forEach(b=>b.onclick=e=>{e.stopPropagation();openDetail(+b.dataset.open)});$$(root+' [data-fav]').forEach(b=>b.onclick=e=>{e.stopPropagation();toggleFav(+b.dataset.fav);if($('#favoritesView').classList.contains('active'))renderFavorites();else runSearch(currentQuery,currentCategory)});$$(root+' .result-card').forEach(c=>c.onclick=()=>openDetail(+c.dataset.id))}
-function renderBank(){const q=$('#bankFilter').value.trim();const cat=$('#categorySelect').value||'全部';const data=TaxSearch.search(bank,q,cat);$('#bankList').innerHTML=data.map(x=>`<div class="bank-row" data-id="${x.id}"><span class="bank-id">${String(x.id).padStart(3,'0')}</span><span class="bank-cat">${x.category}</span><span class="bank-q">${escapeHtml(x.question)}</span><span class="bank-arrow">›</span></div>`).join('');$$('.bank-row').forEach(r=>r.onclick=()=>openDetail(+r.dataset.id))}
-function getFavs(){try{return JSON.parse(localStorage.getItem('taxAIFavorites')||'[]')}catch{return[]}}function isFav(id){return getFavs().includes(id)}
-function toggleFav(id){let a=getFavs();a=a.includes(id)?a.filter(x=>x!==id):[...a,id];localStorage.setItem('taxAIFavorites',JSON.stringify(a));toast(a.includes(id)?'已加入收藏':'已取消收藏')}
-function renderFavorites(){const ids=getFavs();const data=bank.filter(x=>ids.includes(x.id));$('#favoriteList').innerHTML=data.length?data.map(item=>`<article class="result-card" data-id="${item.id}"><div class="result-top"><span class="cat-tag">${item.category}</span><span class="score">收藏題目</span></div><h3>${escapeHtml(item.question)}</h3><p>${escapeHtml(item.summary)}</p><div class="result-actions"><button class="small-btn" data-open="${item.id}">查看完整答詢</button><button class="small-btn" data-fav="${item.id}">★ 取消收藏</button></div></article>`).join(''):'<div class="empty">目前還沒有收藏題目。搜尋後點選「收藏」，就會出現在這裡。</div>';bindCards('#favoriteList')}
-function openDetail(id){const x=bank.find(i=>i.id===id);if(!x)return;const related=(x.relatedIds||[]).map(r=>bank.find(i=>i.id===r)).filter(Boolean);$('#drawerContent').innerHTML=`<div class="detail-head"><span class="cat-tag">${x.category}</span><h2>${escapeHtml(x.question)}</h2><div class="detail-actions"><button class="primary-btn" data-copy>複製完整答詢</button><button class="small-btn" data-dfav>${isFav(id)?'★ 已收藏':'☆ 加入收藏'}</button></div></div><section class="detail-card ai"><h4>✨ 整理重點</h4><p>${escapeHtml(x.summary)}</p></section><section class="detail-card"><h4>標準答詢</h4><p>${escapeHtml(x.answer)}</p></section><section class="detail-card"><h4>相關問題推薦</h4><div class="related-list">${related.map(r=>`<button class="related-btn" data-related="${r.id}">${escapeHtml(r.question)}</button>`).join('')}</div></section><p style="color:#81909d;font-size:12px">題庫版本：${x.version}｜實際答詢仍應以最新法令、函釋及核定資料為準。</p>`;$('.drawer').classList.add('open');$('.drawer').setAttribute('aria-hidden','false');$('[data-copy]').onclick=()=>copyItem(x);$('[data-dfav]').onclick=()=>{toggleFav(id);openDetail(id)};$$('[data-related]').forEach(b=>b.onclick=()=>openDetail(+b.dataset.related))}
+function bindCards(root){$$(root+' [data-open]').forEach(b=>b.onclick=e=>{e.stopPropagation();openDetail(b.dataset.open)});$$(root+' [data-fav]').forEach(b=>b.onclick=e=>{e.stopPropagation();toggleFav(b.dataset.fav);if($('#favoritesView').classList.contains('active'))renderFavorites();else runSearch(currentQuery,currentCategory)});$$(root+' .result-card').forEach(c=>c.onclick=()=>openDetail(c.dataset.id))}
+function renderBank(){const q=$('#bankFilter').value.trim();const cat=$('#categorySelect').value||'全部';const data=TaxSearch.search(bank,q,cat);$('#bankList').innerHTML=data.map(x=>`<div class="bank-row" data-id="${x.id}"><span class="bank-id">${String(x.id).padStart(3,'0')}</span><span class="bank-cat">${x.category}</span><span class="bank-q">${escapeHtml(x.question)}</span><span class="bank-arrow">›</span></div>`).join('');$$('.bank-row').forEach(r=>r.onclick=()=>openDetail(r.dataset.id))}
+function getFavs(){try{return JSON.parse(localStorage.getItem('taxAIFavorites')||'[]')}catch{return[]}}function isFav(id){return getFavs().some(x=>sameId(x,id))}
+function toggleFav(id){let a=getFavs();const exists=a.some(x=>sameId(x,id));a=exists?a.filter(x=>!sameId(x,id)):[...a,id];localStorage.setItem('taxAIFavorites',JSON.stringify(a));toast(!exists?'已加入收藏':'已取消收藏')}
+function renderFavorites(){const ids=getFavs();const data=bank.filter(x=>ids.some(id=>sameId(id,x.id)));$('#favoriteList').innerHTML=data.length?data.map(item=>`<article class="result-card" data-id="${item.id}"><div class="result-top"><span class="cat-tag">${item.category}</span><span class="score">收藏題目</span></div><h3>${escapeHtml(item.question)}</h3><p>${escapeHtml(item.summary)}</p><div class="result-actions"><button class="small-btn" data-open="${item.id}">查看完整答詢</button><button class="small-btn" data-fav="${item.id}">★ 取消收藏</button></div></article>`).join(''):'<div class="empty">目前還沒有收藏題目。搜尋後點選「收藏」，就會出現在這裡。</div>';bindCards('#favoriteList')}
+function openDetail(id){const x=bank.find(i=>sameId(i.id,id));if(!x)return;const related=(x.relatedIds||[]).map(r=>bank.find(i=>sameId(i.id,r))).filter(Boolean);$('#drawerContent').innerHTML=`<div class="detail-head"><span class="cat-tag">${x.category}</span><h2>${escapeHtml(x.question)}</h2><div class="detail-actions"><button class="primary-btn" data-copy>複製完整答詢</button><button class="small-btn" data-dfav>${isFav(id)?'★ 已收藏':'☆ 加入收藏'}</button></div></div><section class="detail-card ai"><h4>✨ 整理重點</h4><p>${escapeHtml(x.summary)}</p></section><section class="detail-card"><h4>標準答詢</h4><p>${escapeHtml(x.answer)}</p></section><section class="detail-card"><h4>相關問題推薦</h4><div class="related-list">${related.map(r=>`<button class="related-btn" data-related="${r.id}">${escapeHtml(r.question)}</button>`).join('')}</div></section><p style="color:#81909d;font-size:12px">題庫版本：${x.version}｜實際答詢仍應以最新法令、函釋及核定資料為準。</p>`;$('.drawer').classList.add('open');$('.drawer').setAttribute('aria-hidden','false');$('[data-copy]').onclick=()=>copyItem(x);$('[data-dfav]').onclick=()=>{toggleFav(id);openDetail(id)};$$('[data-related]').forEach(b=>b.onclick=()=>openDetail(b.dataset.related))}
 function closeDrawer(){$('.drawer').classList.remove('open');$('.drawer').setAttribute('aria-hidden','true')}
 async function copyItem(x){const t=`【${x.category}】
 ${x.question}
@@ -193,7 +239,7 @@ function bindExcelImport(){
         if(ids.has(item.id))throw new Error(`編號 ${item.id} 重複`);
         ids.add(item.id);
       }
-      bank=converted;
+      bank=normalizeBank(converted);
       localStorage.setItem('taxAIExcelBank',JSON.stringify(bank));
       $('#bankCount').textContent=bank.length;
       renderPopular();renderCategories();fillCategorySelect();renderBank();
